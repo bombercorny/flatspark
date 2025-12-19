@@ -1,0 +1,41 @@
+name: Run Pytest on PR to Main
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: |
+          pip install uv
+
+      - name: Install dependencies with uv
+        run: |
+          uv sync --group dev
+
+      - name: Ensure JAVA_HOME is set
+        run: |
+          echo "JAVA_HOME is $JAVA_HOME"
+          java -version
+
+      - name: Run pytest
+        run: |
+          uv run pytest tests/
