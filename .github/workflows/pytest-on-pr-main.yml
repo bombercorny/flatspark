@@ -24,17 +24,13 @@ jobs:
           python-version: '3.13'
 
       - name: Install uv
-        run: |
-          pip install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.18"
 
       - name: Install dependencies with uv
         run: |
           uv sync --group dev
-
-      - name: Ensure JAVA_HOME is set
-        run: |
-          echo "JAVA_HOME is $JAVA_HOME"
-          java -version
 
       - name: Run pytest
         run: |
