@@ -1,8 +1,7 @@
 import pyspark.sql.functions as F
-from pyspark.sql import DataFrame
+from pyspark.sql import DataFrame, Column
 from pyspark.sql.types import ArrayType
-from typing import Callable, Optional
-# from pyspark.sql.connect.dataframe import DataFrame as DataFrame_c
+from typing import Callable, Optional, Union
 
 
 def flatten_struct_columns(nested_df: DataFrame, seperator: str = "__"):
@@ -35,11 +34,12 @@ def get_exploded_array_column(
     array_column: str,
     technical_id_columns: list[str],
     standard_columns: list[str],
+    explode_strategy: Callable[[Union[Column, str]], Column] = F.explode_outer,
 ) -> DataFrame:
     available_standard_columns = [col for col in standard_columns if col in df.columns]
     return df.select(
         *technical_id_columns, *available_standard_columns, array_column
-    ).withColumn(array_column, F.explode_outer(array_column))
+    ).withColumn(array_column, explode_strategy(array_column))
 
 
 def add_technical_id(
@@ -91,7 +91,7 @@ def get_array_column_names(df: DataFrame) -> list[str]:
 def get_dataframe_dicts(
     df: DataFrame,
     standard_columns: list[str],
-    level: str = "main",
+    root_name: str = "main",
     technical_id_suffix: str = "_technical_id",
     additional_transformations: Optional[
         dict[str, Callable[[DataFrame, dict], DataFrame]]
@@ -100,34 +100,33 @@ def get_dataframe_dicts(
     technical_id_columns: Optional[list[str]] = None,
     seperator: str = "__",
     existing_max_tech_ids: Optional[dict[str, int]] = None,
+    explode_strategy: Callable[[Union[Column, str]], Column] = F.explode_outer,
 ) -> dict[str, DataFrame]:
     """Flattens all nested StructTypes and Arrays"""
     if not additional_transformations:
         additional_transformations = {}
 
-    tech_id_column = f"{level}{technical_id_suffix}"
+    tech_id_column = f"{root_name}{technical_id_suffix}"
     if not technical_id_columns:
         technical_id_columns = [tech_id_column]
-    # add the logic here to address technical_ids
+
     df = add_technical_id(df, tech_id_column, max_existing_id=existing_max_tech_ids)
 
     if not flattened_dfs:
-        flattened_dfs = {level: df}
+        flattened_dfs = {root_name: df}
 
     updated_dfs = {}
     for current_level, df in flattened_dfs.items():
         flat_with_arrays_df = flatten_struct_columns(df, seperator)
         array_columns = get_array_column_names(flat_with_arrays_df)
 
-        # some transformations need to take place during flattening
-        # in order to include these columns in follow up flattenings
-        # e.g. adding additional standard columns like 'isMainScoring'
+        # some transformations may need to take place during flattening
         if additional_transformations.get(current_level):
             flat_with_array_transformed_df = additional_transformations[current_level][
-                "function"
+                "function"  # type: ignore
             ](
                 flat_with_arrays_df,
-                **additional_transformations[current_level].get("kwargs", {}),
+                **additional_transformations[current_level].get("kwargs", {}),  # type: ignore
             )
         else:
             flat_with_array_transformed_df = flat_with_arrays_df
@@ -136,15 +135,16 @@ def get_dataframe_dicts(
 
         for array_column in array_columns:
             exploded_array_df = get_exploded_array_column(
-                flat_with_array_transformed_df,
-                array_column,
-                technical_id_columns,
-                standard_columns,
+                df=flat_with_array_transformed_df,
+                array_column=array_column,
+                technical_id_columns=technical_id_columns,
+                standard_columns=standard_columns,
+                explode_strategy=explode_strategy,
             )
             updated_dfs[array_column] = get_dataframe_dicts(
                 df=exploded_array_df,
                 standard_columns=standard_columns,
-                level=array_column,
+                root_name=array_column,
                 flattened_dfs=None,
                 technical_id_columns=technical_id_columns
                 + [f"{array_column}{technical_id_suffix}"],
@@ -174,24 +174,49 @@ def flatten_dicts(
 
 def get_flattened_dataframes(
     df: DataFrame,
-    standard_columns: list[str],
-    level: str = "main",
+    standard_columns: Optional[list[str]] = None,
+    root_name: str = "main",
     technical_id_suffix: str = "_technical_id",
     additional_transformations: Optional[
-        dict[str, Callable[[DataFrame], DataFrame]]
+        dict[str, Callable[[DataFrame, dict], DataFrame]]
     ] = None,
     seperator: str = "__",
     existing_max_tech_ids: Optional[dict[str, int]] = None,
+    explode_strategy: Callable[[Union[Column, str]], Column] = F.explode_outer,
 ) -> dict[str, DataFrame]:
-    """Flattens all nested structs and arrays and returns a dictionnary of the flattened DataFrames"""
+    """Flattens all nested structs and arrays and returns a dictionnary of the flattened DataFrames.
+
+    Args:
+        df: The input DataFrame to flatten.
+        standard_columns: List of standard columns to to select if available in each DataFrame.
+        root_name: The name to use for the root DataFrame.
+        technical_id_suffix: Suffix to use for technical id columns.
+        additional_transformations:
+            A dictionary of additional transformations to apply at specific levels during the flattening.
+            Example: {"businessPartners": {"function": my_transformation_function, "kwargs": {"arg1": value1}}}
+        seperator: The separator to use when flattening nested fields and renaming them.
+        existing_max_tech_ids:
+            A dictionary containing the maximum value of each technical id column.
+            Technical ids will start from these values + 1.
+        explode_strategy:
+            Either F.explode or F.explode_outer to handle nulls in array columns.
+            Default is F.explode_outer.
+
+    Returns:
+        A dictionary where keys are the names of the flattened DataFrames and values are the flattened DataFrames.
+    """
+    if not standard_columns:
+        standard_columns = []
+
     dataframe_dicts = get_dataframe_dicts(
         df=df,
         standard_columns=standard_columns,
-        level=level,
+        root_name=root_name,
         technical_id_suffix=technical_id_suffix,
         additional_transformations=additional_transformations,
         seperator=seperator,
         existing_max_tech_ids=existing_max_tech_ids,
+        explode_strategy=explode_strategy,
     )
     flattened_dataframes = flatten_dicts(dataframe_dicts)
     return flattened_dataframes
